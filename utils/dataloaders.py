@@ -175,6 +175,7 @@ def create_dataloader(
     prefix="",
     shuffle=False,
     seed=0,
+    fusion=False, # New parameter
 ):
     """Creates and returns a configured DataLoader instance for loading and processing image datasets."""
     if rect and shuffle:
@@ -195,6 +196,7 @@ def create_dataloader(
             image_weights=image_weights,
             prefix=prefix,
             rank=rank,
+            fusion=fusion,
         )
 
     batch_size = min(batch_size, len(dataset))
@@ -531,7 +533,9 @@ def img2label_paths(img_paths):
     extension with `.txt`.
     """
     sa, sb = f"{os.sep}images{os.sep}", f"{os.sep}labels{os.sep}"  # /images/, /labels/ substrings
-    return [sb.join(x.rsplit(sa, 1)).rsplit(".", 1)[0] + ".txt" for x in img_paths]
+    # if fusion:
+    #     return [f"{os.sep}".join(sb.join(str(x[0]).rsplit(sa, 1)).rsplit(os.sep)[:-1])+".txt" for x in img_paths]
+    return [sb.join(str(x).rsplit(sa, 1)).rsplit(".", 1)[0] + ".txt" for x in img_paths]
 
 
 class LoadImagesAndLabels(Dataset):
@@ -565,20 +569,28 @@ class LoadImagesAndLabels(Dataset):
         self.hyp = hyp
         self.image_weights = image_weights
         self.rect = False if image_weights else rect
-        self.mosaic = self.augment and not self.rect  # load 4 images at a time into a mosaic (only during training)
+        self.mosaic = False # self.augment and not self.rect  # load 4 images at a time into a mosaic (only during training)
         self.mosaic_border = [-img_size // 2, -img_size // 2]
         self.stride = stride
         self.path = path
         self.albumentations = Albumentations(size=img_size) if augment else None
-        self.fusion = fusion
+        self.fusion = fusion # Store fusion parameter
 
         try:
             f = []  # image files
             for p in path if isinstance(path, list) else [path]:
                 p = Path(p)  # os-agnostic
                 if p.is_dir():  # dir
-                    f += glob.glob(str(p / "**" / "*.*"), recursive=True)
-                    # f = list(p.rglob('*.*'))  # pathlib
+                    if fusion:
+                        # Group images by observation_id (folder name)
+                        for observation_dir in p.iterdir():
+                            if observation_dir.is_dir():
+                                images = list(observation_dir.glob("*.*"))
+                                if images:
+                                    f.append(images)  # Append list of images
+                    else:
+                        f += glob.glob(str(p / "**" / "*.*"), recursive=True)
+                        # f = list(p.rglob('*.*'))  # pathlib
                 elif p.is_file():  # file
                     with open(p) as t:
                         t = t.read().strip().splitlines()
@@ -587,8 +599,11 @@ class LoadImagesAndLabels(Dataset):
                         # f += [p.parent / x.lstrip(os.sep) for x in t]  # to global path (pathlib)
                 else:
                     raise FileNotFoundError(f"{prefix}{p} does not exist")
-            self.im_files = sorted(x.replace("/", os.sep) for x in f if x.split(".")[-1].lower() in IMG_FORMATS)
-            # self.img_files = sorted([x for x in f if x.suffix[1:].lower() in IMG_FORMATS])  # pathlib
+            if fusion:
+                self.im_files = [os.sep.join(str(group[0]).split(os.sep)[:-1]) for group in f]  # List of lists (grouped by observation_id)
+            else:
+                self.im_files = sorted(x.replace("/", os.sep) for x in f if x.split(".")[-1].lower() in IMG_FORMATS)
+                # self.img_files = sorted([x for x in f if x.suffix[1:].lower() in IMG_FORMATS])  # pathlib
             assert self.im_files, f"{prefix}No images found"
         except Exception as e:
             raise Exception(f"{prefix}Error loading data from {path}: {e}\n{HELP_URL}") from e
@@ -728,7 +743,7 @@ class LoadImagesAndLabels(Dataset):
         desc = f"{prefix}Scanning {path.parent / path.stem}..."
         with Pool(NUM_THREADS) as pool:
             pbar = tqdm(
-                pool.imap(verify_image_label, zip(self.im_files, self.label_files, repeat(prefix))),
+                pool.imap(verify_image_label, zip(self.im_files, self.label_files, repeat(prefix), repeat(self.fusion))),
                 desc=desc,
                 total=len(self.im_files),
                 bar_format=TQDM_BAR_FORMAT,
@@ -791,7 +806,14 @@ class LoadImagesAndLabels(Dataset):
 
             # Letterbox
             shape = self.batch_shapes[self.batch[index]] if self.rect else self.img_size  # final letterboxed shape
-            img, ratio, pad = letterbox(img, shape, auto=False, scaleup=self.augment)
+            if self.fusion:
+                n_img = []
+                for im in img:
+                    _im, ratio, pad = letterbox(im, shape, auto=False, scaleup=self.augment)
+                    n_img.append(_im)
+                img = n_img
+            else:
+                img, ratio, pad = letterbox(img, shape, auto=False, scaleup=self.augment)
             shapes = (h0, w0), ((h / h0, w / w0), pad)  # for COCO mAP rescaling
 
             labels = self.labels[index].copy()
@@ -811,7 +833,10 @@ class LoadImagesAndLabels(Dataset):
 
         nl = len(labels)  # number of labels
         if nl:
-            labels[:, 1:5] = xyxy2xywhn(labels[:, 1:5], w=img.shape[1], h=img.shape[0], clip=True, eps=1e-3)
+            if self.fusion:
+                labels[:, 1:5] = xyxy2xywhn(labels[:, 1:5], w=img[0].shape[1], h=img[0].shape[0], clip=True, eps=1e-3)
+            else:
+                labels[:, 1:5] = xyxy2xywhn(labels[:, 1:5], w=img.shape[1], h=img.shape[0], clip=True, eps=1e-3)
 
         if self.augment:
             # Albumentations
@@ -842,10 +867,19 @@ class LoadImagesAndLabels(Dataset):
             labels_out[:, 1:] = torch.from_numpy(labels)
 
         # Convert
-        img = img.transpose((2, 0, 1))[::-1]  # HWC to CHW, BGR to RGB
-        img = np.ascontiguousarray(img)
-
-        return torch.from_numpy(img), labels_out, self.im_files[index], shapes
+        if self.fusion:
+            n_img = []
+            for im in img:
+                im = im.transpose((2, 0, 1))[::-1]  # HWC to CHW, BGR to RGB
+                im = np.ascontiguousarray(im)
+                im = torch.from_numpy(im)
+                n_img.append(im)
+            img = n_img
+        else:
+            img = img.transpose((2, 0, 1))[::-1]  # HWC to CHW, BGR to RGB
+            img = np.ascontiguousarray(img)
+            img = torch.from_numpy(img)
+        return torch.cat(img,0), labels_out, self.im_files[index], shapes
 
     def load_image(self, i):
         """
@@ -858,6 +892,16 @@ class LoadImagesAndLabels(Dataset):
             self.im_files[i],
             self.npy_files[i],
         )
+        if self.fusion:
+            res = []
+            for file in Path(f).iterdir() if Path(f).is_dir() else []:
+                _im, hw0, hw = self._load_image(im, file, fn, i)
+                res.append(_im)
+            return res, hw0, hw
+        else:
+            return self._load_image(im, f, fn, i)
+
+    def _load_image(self, im, f, fn, i):
         if im is None:  # not cached in RAM
             if fn.exists():  # load npy
                 im = np.load(fn)
@@ -1137,9 +1181,13 @@ def autosplit(path=DATASETS_DIR / "coco128/images", weights=(0.9, 0.1, 0.0), ann
 
 def verify_image_label(args):
     """Verifies a single image-label pair, ensuring image format, size, and legal label values."""
-    im_file, lb_file, prefix = args
+    im_file, lb_file, prefix, fusion = args
     nm, nf, ne, nc, msg, segments = 0, 0, 0, 0, "", []  # number (missing, found, empty, corrupt), message, segments
+    og_im_file = im_file
     try:
+        if fusion:
+            if os.path.isdir(im_file):
+                im_file = sorted(Path(im_file).glob("*.*"))[0]  # Get the first file in the folder
         # verify images
         im = Image.open(im_file)
         im.verify()  # PIL verify
@@ -1152,6 +1200,8 @@ def verify_image_label(args):
                 if f.read() != b"\xff\xd9":  # corrupt JPEG
                     ImageOps.exif_transpose(Image.open(im_file)).save(im_file, "JPEG", subsampling=0, quality=100)
                     msg = f"{prefix}WARNING ⚠️ {im_file}: corrupt JPEG restored and saved"
+        if fusion:
+            im_file = og_im_file
 
         # verify labels
         if os.path.isfile(lb_file):

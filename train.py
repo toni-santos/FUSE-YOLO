@@ -134,7 +134,7 @@ def train(hyp, opt, device, callbacks):
         - Datasets: https://github.com/ultralytics/yolov5/tree/master/data
         - Tutorial: https://docs.ultralytics.com/yolov5/tutorials/train_custom_data
     """
-    save_dir, epochs, batch_size, weights, single_cls, evolve, data, cfg, resume, noval, nosave, workers, freeze = (
+    save_dir, epochs, batch_size, weights, single_cls, evolve, data, cfg, resume, noval, nosave, workers, freeze, fusion = (
         Path(opt.save_dir),
         opt.epochs,
         opt.batch_size,
@@ -148,6 +148,7 @@ def train(hyp, opt, device, callbacks):
         opt.nosave,
         opt.workers,
         opt.freeze,
+        opt.fusion
     )
     callbacks.run("on_pretrain_routine_start")
 
@@ -220,7 +221,7 @@ def train(hyp, opt, device, callbacks):
         model.load_state_dict(csd, strict=False)  # load
         LOGGER.info(f"Transferred {len(csd)}/{len(model.state_dict())} items from {weights}")  # report
     else:
-        model = Model(cfg, ch=3, nc=nc, anchors=hyp.get("anchors")).to(device)  # create
+        model = Model(cfg, ch=3, nc=nc, anchors=hyp.get("anchors"), fusion=fusion).to(device)  # create
     amp = check_amp(model)  # check AMP
 
     # Freeze
@@ -281,6 +282,12 @@ def train(hyp, opt, device, callbacks):
         model = torch.nn.SyncBatchNorm.convert_sync_batchnorm(model).to(device)
         LOGGER.info("Using SyncBatchNorm()")
 
+    # Cache & Fusion
+    if fusion:
+        cache = False
+    else:
+        cache = False if opt.cache == "val" else opt.cache
+
     # Trainloader
     train_loader, dataset = create_dataloader(
         train_path,
@@ -289,8 +296,8 @@ def train(hyp, opt, device, callbacks):
         gs,
         single_cls,
         hyp=hyp,
-        augment=True,
-        cache=None if opt.cache == "val" else opt.cache,
+        augment=False,
+        cache=cache,
         rect=opt.rect,
         rank=LOCAL_RANK,
         workers=workers,
@@ -299,6 +306,7 @@ def train(hyp, opt, device, callbacks):
         prefix=colorstr("train: "),
         shuffle=True,
         seed=opt.seed,
+        fusion=fusion
     )
     labels = np.concatenate(dataset.labels, 0)
     mlc = int(labels[:, 0].max())  # max label class
@@ -313,12 +321,14 @@ def train(hyp, opt, device, callbacks):
             gs,
             single_cls,
             hyp=hyp,
-            cache=None if noval else opt.cache,
+            augment=False,
+            cache=cache,
             rect=True,
             rank=-1,
             workers=workers * 2,
             pad=0.5,
             prefix=colorstr("val: "),
+            fusion=fusion
         )[0]
 
         if not resume:
@@ -437,7 +447,7 @@ def train(hyp, opt, device, callbacks):
                 mem = f"{torch.cuda.memory_reserved() / 1e9 if torch.cuda.is_available() else 0:.3g}G"  # (GB)
                 pbar.set_description(
                     ("%11s" * 2 + "%11.4g" * 5)
-                    % (f"{epoch}/{epochs - 1}", mem, *mloss, targets.shape[0], imgs.shape[-1])
+                    % (f"{epoch}/{epochs - 1}", mem, *mloss, targets.shape[0], imgs[0].shape[-1])
                 )
                 callbacks.run("on_train_batch_end", model, ni, imgs, targets, paths, list(mloss))
                 if callbacks.stop_training:
@@ -613,6 +623,9 @@ def parse_opt(known=False):
     parser.add_argument("--ndjson-console", action="store_true", help="Log ndjson to console")
     parser.add_argument("--ndjson-file", action="store_true", help="Log ndjson to file")
 
+    # Fusion arguments
+    parser.add_argument("--fusion", action="store_true", help="Use fusion model")
+
     return parser.parse_known_args()[0] if known else parser.parse_args()
 
 
@@ -717,7 +730,7 @@ def main(opt, callbacks=Callbacks()):
             "perspective": (True, 0.0, 0.001),  # image perspective (+/- fraction), range 0-0.001
             "flipud": (True, 0.0, 1.0),  # image flip up-down (probability)
             "fliplr": (True, 0.0, 1.0),  # image flip left-right (probability)
-            "mosaic": (True, 0.0, 1.0),  # image mosaic (probability)
+            "mosaic": (False, 0.0, 1.0),  # image mosaic (probability)
             "mixup": (True, 0.0, 1.0),  # image mixup (probability)
             "copy_paste": (True, 0.0, 1.0),  # segment copy-paste (probability)
         }

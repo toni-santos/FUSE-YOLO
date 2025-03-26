@@ -153,11 +153,11 @@ class Segment(Detect):
 class BaseModel(nn.Module):
     """YOLOv5 base model."""
 
-    def forward(self, x, profile=False, visualize=False, fusion=False, string=None):
+    def forward(self, x, profile=False, visualize=False, string=None):
         """Executes a single-scale inference or training pass on the YOLOv5 base model, with options for profiling and
         visualization.
         """
-        return self._forward_once(x, profile, visualize, fusion, string)  # single-scale inference, train
+        return self._forward_once(x, profile, visualize, string)  # single-scale inference, train
 
     def _forward_once(self, x, profile=False, visualize=False, string=None):
         """Performs a forward pass on the YOLOv5 model, enabling profiling and feature visualization options."""
@@ -292,7 +292,7 @@ class DetectionModel(BaseModel):
             s = 256  # 2x min stride
             m.inplace = self.inplace
             if self.fusion:
-                m.stride = torch.tensor([s / x.shape[-2] for x in _forward([torch.zeros(1, ch, s, s)] * self.ni)]) # forward
+                m.stride = torch.tensor([s / x.shape[-2] for x in _forward(torch.zeros(1, ch*self.ni, s, s))]) # forward
             else:
                 m.stride = torch.tensor([s / x.shape[-2] for x in _forward(torch.zeros(1, ch, s, s))])  # forward
             check_anchor_order(m)
@@ -315,7 +315,8 @@ class DetectionModel(BaseModel):
         # TODO: augment fusion
         to_fuse = []
         fuse = []
-        inputs = x
+
+        inputs = torch.split(x, x.shape[1] // self.ni, dim=1)
 
         # Run backbone and get features to fuse
         for idx, m in enumerate(self.backbone):
@@ -554,7 +555,7 @@ def parse_model(d, ch=None, string=None, fuse_steps=[]):
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
     parser.add_argument("--cfg", type=str, default="yolov5s.yaml", help="model.yaml")
-    parser.add_argument("--batch-size", type=int, default=1, help="total batch size for all GPUs")
+    parser.add_argument("--batch-size", type=int, default=6, help="total batch size for all GPUs")
     parser.add_argument("--device", default="", help="cuda device, i.e. 0 or 0,1,2,3 or cpu")
     parser.add_argument("--profile", action="store_true", help="profile model speed")
     parser.add_argument("--line-profile", action="store_true", help="profile model speed layer by layer")
@@ -567,7 +568,9 @@ if __name__ == "__main__":
     device = select_device(opt.device)
 
     # Create model
-    im = torch.rand(opt.batch_size, 3, 512, 512).to(device)
+    im = torch.rand(3, 512, 512)
+    im = torch.cat([im, im, im])
+    im = torch.stack([im] * opt.batch_size).to(device)
     model = Model(opt.cfg, fusion=opt.fusion).to(device)
 
     # Options
