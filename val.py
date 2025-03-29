@@ -214,6 +214,7 @@ def run(
     plots=True,
     callbacks=Callbacks(),
     compute_loss=None,
+    fusion=False
 ):
     """
     Evaluates a YOLOv5 model on a dataset and logs performance metrics.
@@ -311,6 +312,7 @@ def run(
             rect=rect,
             workers=workers,
             prefix=colorstr(f"{task}: "),
+            fusion=fusion
         )[0]
 
     seen = 0
@@ -393,6 +395,13 @@ def run(
 
         # Plot images
         if plots and batch_i < 3:
+            if fusion:
+                im = torch.split(im, im.shape[0], dim=0) # split into individual batch
+                res = []
+                for img in im:
+                    i = torch.split(img, 3, dim=1)  # split into 3 images
+                    res.append(i[0])
+                im = torch.stack(res, dim=0)[0]
             plot_images(im, targets, paths, save_dir / f"val_batch{batch_i}_labels.jpg", names)  # labels
             plot_images(im, output_to_target(preds), paths, save_dir / f"val_batch{batch_i}_pred.jpg", names)  # pred
 

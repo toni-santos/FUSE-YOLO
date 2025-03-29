@@ -204,9 +204,8 @@ class Loggers:
                 for im in imgs:
                     i = torch.split(im, 3, dim=1)  # split into 3 images
                     res.append(i[0])
-                imgs = torch.stack(res, dim=0)
-                print(f"imgs.shape: {imgs.shape}")
-                plot_images(imgs[0], targets, paths, f)
+                imgs = torch.stack(res, dim=0)[0]
+                plot_images(imgs, targets, paths, f)
                 if ni == 0 and self.tb and not self.opt.sync_bn:
                     log_tensorboard_graph(self.tb, model, imgsz=(self.opt.imgsz, self.opt.imgsz))
             if ni == 10 and (self.wandb or self.clearml):

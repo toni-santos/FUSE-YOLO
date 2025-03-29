@@ -194,7 +194,7 @@ class BaseModel(nn.Module):
                 feature_visualization(x, m.type, m.i, save_dir=visualize)
         
         if string and string.startswith("backbone"):
-                return x, y
+            return x, y
         
         return x
 
