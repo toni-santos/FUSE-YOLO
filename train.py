@@ -220,6 +220,35 @@ def train(hyp, opt, device, callbacks):
         csd = intersect_dicts(csd, model.state_dict(), exclude=exclude)  # intersect
         model.load_state_dict(csd, strict=False)  # load
         LOGGER.info(f"Transferred {len(csd)}/{len(model.state_dict())} items from {weights}")  # report
+    # NOTE: possible solution for transfer learning
+    elif fusion:
+        weights = 'yolov5l.pt'
+        t_cfg = 'models/yolov5l.yaml'
+
+        with torch_distributed_zero_first(LOCAL_RANK):
+            weights = attempt_download(weights)  # download if not found locally
+        ckpt = torch.load(weights, map_location="cpu")  # load checkpoint to CPU to avoid CUDA memory leak
+        m1 = Model(t_cfg or ckpt["model"].yaml, ch=3, nc=nc, anchors=hyp.get("anchors"))  # create
+        exclude = ["anchor"] if (cfg or hyp.get("anchors")) and not resume else []  # exclude keys
+        csd = ckpt["model"].float().state_dict()  # checkpoint state_dict as FP32
+        csd = intersect_dicts(csd, m1.state_dict(), exclude=exclude)  # intersect
+        m1.load_state_dict(csd, strict=False)  # load
+        LOGGER.info(f"Transferred {len(csd)}/{len(m1.state_dict())} items from {weights}")  # report
+        
+        model = Model(cfg, ch=3, nc=nc, anchors=hyp.get("anchors"), fusion=fusion).to(device)  # create
+        msd = m1.state_dict()
+
+        for k, v in msd.items():
+            step = k.split('.')[1]
+            if int(step) <= 9: # BACKBONE
+                for i in range(3):
+                    mk = f"backbone.{i}.{".".join(k.split('.')[1:])}"
+                    model.state_dict()[mk].copy_(v)
+            else:
+                mk = f"model.{int(k.split('.')[1]) - 10}.{".".join(k.split('.')[2:])}"
+                model.state_dict()[mk].copy_(v)
+
+        del m1, msd
     else:
         model = Model(cfg, ch=3, nc=nc, anchors=hyp.get("anchors"), fusion=fusion).to(device)  # create
     amp = check_amp(model)  # check AMP
@@ -434,8 +463,11 @@ def train(hyp, opt, device, callbacks):
             if ni - last_opt_step >= accumulate:
                 scaler.unscale_(optimizer)  # unscale gradients
                 torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=10.0)  # clip gradients
+                weight_norm_before = sum(p.norm().item() for p in model.parameters())
                 scaler.step(optimizer)  # optimizer.step
                 scaler.update()
+                weight_norm_after = sum(p.norm().item() for p in model.parameters())
+                LOGGER.info(f"Weight norm before: {weight_norm_before:.6f}, after: {weight_norm_after:.6f}")
                 optimizer.zero_grad()
                 if ema:
                     ema.update(model)
