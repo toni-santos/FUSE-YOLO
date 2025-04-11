@@ -267,14 +267,20 @@ class DetectionModel(BaseModel):
         self.fusion = fusion
 
         if self.fusion:
-            self.fuse_steps = self.yaml['fuse_steps']
             self.ni = self.yaml["ni"]  # number of inputs
+            self.fusion_type = self.yaml["fusion_type"]
 
-            # NOTE: backbone is a nn.ModuleList
-            self.backbone, _, backbone_ch = parse_model(deepcopy(self.yaml), ch=[ch], string='backbone', fuse_steps=self.fuse_steps)
-            self.backbone_save = self.fuse_steps
-            self._fuse, self.fuse_save, fuse_ch = parse_model(deepcopy(self.yaml), ch=deepcopy(backbone_ch), string='fuse')
-            self.model, self.save = parse_model(deepcopy(self.yaml), ch=fuse_ch, string='head')
+            if self.fusion_type == 'early':
+                self._fuse, self.fuse_save, fuse_ch = parse_model(deepcopy(self.yaml), ch=[ch], string='fuse')
+                self.model, self.save = parse_model(deepcopy(self.yaml), ch=fuse_ch)
+            elif self.fusion_type == 'late':
+                self.fuse_steps = self.yaml['fuse_steps']
+
+                # NOTE: backbone is a nn.ModuleList
+                self.backbone, _, backbone_ch = parse_model(deepcopy(self.yaml), ch=[ch], string='backbone', fuse_steps=self.fuse_steps)
+                self.backbone_save = self.fuse_steps
+                self._fuse, self.fuse_save, fuse_ch = parse_model(deepcopy(self.yaml), ch=deepcopy(backbone_ch), string='fuse')
+                self.model, self.save = parse_model(deepcopy(self.yaml), ch=fuse_ch, string='head')
         else:
             self.model, self.save = parse_model(deepcopy(self.yaml), ch=[ch])  # model, savelist
 
@@ -318,17 +324,21 @@ class DetectionModel(BaseModel):
 
         inputs = torch.split(x, x.shape[1] // self.ni, dim=1)
 
-        # Run backbone and get features to fuse
-        for idx, m in enumerate(self.backbone):
-            x_res, features = self._forward_once(inputs[idx], profile, visualize, f'backbone_{idx}')
-            to_fuse.append([feat for idx, feat in enumerate(features) if idx in [x for x in self.fuse_steps]])
+        if self.fusion_type == 'early':
+            fused = self._forward_once(inputs, profile, visualize, 'fuse_0')
+            x = self._forward_once(fused, profile, visualize)
+        elif self.fusion_type == 'late':
+            # Run backbone and get features to fuse
+            for idx, m in enumerate(self.backbone):
+                x_res, features = self._forward_once(inputs[idx], profile, visualize, f'backbone_{idx}')
+                to_fuse.append([feat for idx, feat in enumerate(features) if idx in [x for x in self.fuse_steps]])
 
-        # Fusion
-        for idx, feat_list in enumerate(zip(*to_fuse)):
-            fused = self._forward_once(feat_list, profile, visualize, f'fuse_{idx}')
-            fuse.append(fused)
+            # Fusion
+            for idx, feat_list in enumerate(zip(*to_fuse)):
+                fused = self._forward_once(feat_list, profile, visualize, f'fuse_{idx}')
+                fuse.append(fused)
 
-        x = self._forward_once(fuse, profile, visualize, 'head')
+            x = self._forward_once(fuse, profile, visualize, 'head')
         
         return x
 
@@ -541,10 +551,14 @@ def parse_model(d, ch=None, string=None, fuse_steps=[]):
             ch = []
         ch.append(c2)
 
+    fusion_type = d.get("fusion_type", None)
     if string == "backbone":
         ni = d["ni"]
         return nn.ModuleList([nn.Sequential(*layers) for i in range(ni)]), sorted(save), final_ch
     elif string == "fuse":
+        if fusion_type == 'early':
+            return nn.Sequential(*layers), sorted(save), final_ch
+
         for fuse_part in layers:
             fuse_part.f = -1
         return nn.ModuleList(layers), range(len(d["fuse_steps"])), final_ch

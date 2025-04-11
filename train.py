@@ -134,7 +134,7 @@ def train(hyp, opt, device, callbacks):
         - Datasets: https://github.com/ultralytics/yolov5/tree/master/data
         - Tutorial: https://docs.ultralytics.com/yolov5/tutorials/train_custom_data
     """
-    save_dir, epochs, batch_size, weights, single_cls, evolve, data, cfg, resume, noval, nosave, workers, freeze, fusion = (
+    save_dir, epochs, batch_size, weights, single_cls, evolve, data, cfg, resume, noval, nosave, workers, freeze, fusion, tl_fusion, fusion_type = (
         Path(opt.save_dir),
         opt.epochs,
         opt.batch_size,
@@ -148,7 +148,9 @@ def train(hyp, opt, device, callbacks):
         opt.nosave,
         opt.workers,
         opt.freeze,
-        opt.fusion
+        opt.fusion,
+        opt.tl_fusion,
+        opt.fusion_type,
     )
     callbacks.run("on_pretrain_routine_start")
 
@@ -221,34 +223,50 @@ def train(hyp, opt, device, callbacks):
         model.load_state_dict(csd, strict=False)  # load
         LOGGER.info(f"Transferred {len(csd)}/{len(model.state_dict())} items from {weights}")  # report
     # NOTE: possible solution for transfer learning
-    elif fusion:
-        weights = 'yolov5l.pt'
-        t_cfg = 'models/yolov5l.yaml'
+    elif fusion and tl_fusion:
+        # Transfer learning fusion model
+        if fusion_type == "early":
+            weights = 'yolov5l.pt'
+            t_cfg = 'models/yolov5l.yaml'
 
-        with torch_distributed_zero_first(LOCAL_RANK):
-            weights = attempt_download(weights)  # download if not found locally
-        ckpt = torch.load(weights, map_location="cpu")  # load checkpoint to CPU to avoid CUDA memory leak
-        m1 = Model(t_cfg or ckpt["model"].yaml, ch=3, nc=nc, anchors=hyp.get("anchors"))  # create
-        exclude = ["anchor"] if (cfg or hyp.get("anchors")) and not resume else []  # exclude keys
-        csd = ckpt["model"].float().state_dict()  # checkpoint state_dict as FP32
-        csd = intersect_dicts(csd, m1.state_dict(), exclude=exclude)  # intersect
-        m1.load_state_dict(csd, strict=False)  # load
-        LOGGER.info(f"Transferred {len(csd)}/{len(m1.state_dict())} items from {weights}")  # report
-        
-        model = Model(cfg, ch=3, nc=nc, anchors=hyp.get("anchors"), fusion=fusion).to(device)  # create
-        msd = m1.state_dict()
+            with torch_distributed_zero_first(LOCAL_RANK):
+                weights = attempt_download(weights)  # download if not found locally
+            ckpt = torch.load(weights, map_location="cpu")  # load checkpoint to CPU to avoid CUDA memory leak
+            model = Model(cfg, ch=3, nc=nc, anchors=hyp.get("anchors"), fusion=fusion).to(device)  # create
+            exclude = ["anchor"] if (cfg or hyp.get("anchors")) and not resume else []  # exclude keys
+            csd = ckpt["model"].float().state_dict()  # checkpoint state_dict as FP32
+            csd = intersect_dicts(csd, model.state_dict(), exclude=exclude)  # intersect
+            model.load_state_dict(csd, strict=False)  # load
+            LOGGER.info(f"Transferred {len(csd)}/{len(model.state_dict())} items from {weights}")  # report
 
-        for k, v in msd.items():
-            step = k.split('.')[1]
-            if int(step) <= 9: # BACKBONE
-                for i in range(3):
-                    mk = f"backbone.{i}.{".".join(k.split('.')[1:])}"
+        elif fusion_type == "late":
+            weights = 'yolov5l.pt'
+            t_cfg = 'models/yolov5l.yaml'
+
+            with torch_distributed_zero_first(LOCAL_RANK):
+                weights = attempt_download(weights)  # download if not found locally
+            ckpt = torch.load(weights, map_location="cpu")  # load checkpoint to CPU to avoid CUDA memory leak
+            m1 = Model(t_cfg or ckpt["model"].yaml, ch=3, nc=nc, anchors=hyp.get("anchors"))  # create
+            exclude = ["anchor"] if (cfg or hyp.get("anchors")) and not resume else []  # exclude keys
+            csd = ckpt["model"].float().state_dict()  # checkpoint state_dict as FP32
+            csd = intersect_dicts(csd, m1.state_dict(), exclude=exclude)  # intersect
+            m1.load_state_dict(csd, strict=False)  # load
+            LOGGER.info(f"Transferred {len(csd)}/{len(m1.state_dict())} items from {weights}")  # report
+            
+            model = Model(cfg, ch=3, nc=nc, anchors=hyp.get("anchors"), fusion=fusion).to(device)  # create
+            msd = m1.state_dict()
+
+            for k, v in msd.items():
+                step = k.split('.')[1]
+                if int(step) <= 9: # BACKBONE
+                    for i in range(3):
+                        mk = f"backbone.{i}.{'.'.join(k.split('.')[1:])}"
+                        model.state_dict()[mk].copy_(v)
+                else:
+                    mk = f"model.{int(k.split('.')[1]) - 10}.{'.'.join(k.split('.')[2:])}"
                     model.state_dict()[mk].copy_(v)
-            else:
-                mk = f"model.{int(k.split('.')[1]) - 10}.{".".join(k.split('.')[2:])}"
-                model.state_dict()[mk].copy_(v)
 
-        del m1, msd
+            del m1, msd
     else:
         model = Model(cfg, ch=3, nc=nc, anchors=hyp.get("anchors"), fusion=fusion).to(device)  # create
     amp = check_amp(model)  # check AMP
@@ -658,6 +676,8 @@ def parse_opt(known=False):
 
     # Fusion arguments
     parser.add_argument("--fusion", action="store_true", help="Use fusion model")
+    parser.add_argument("--tl-fusion", action="store_true", help="Use transfer learning fusion model")
+    parser.add_argument("--fusion-type", type=str, default="late", help="Fusion type: early or late")
 
     return parser.parse_known_args()[0] if known else parser.parse_args()
 
