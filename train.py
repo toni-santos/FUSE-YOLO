@@ -333,10 +333,7 @@ def train(hyp, opt, device, callbacks):
         LOGGER.info("Using SyncBatchNorm()")
 
     # Cache & Fusion
-    if fusion:
-        cache = False
-    else:
-        cache = False if opt.cache == "val" else opt.cache
+    cache = False if opt.cache == "val" else opt.cache
 
     # Trainloader
     train_loader, dataset = create_dataloader(

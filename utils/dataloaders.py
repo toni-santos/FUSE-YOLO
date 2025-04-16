@@ -713,7 +713,10 @@ class LoadImagesAndLabels(Dataset):
                         b += self.npy_files[i].stat().st_size
                     else:  # 'ram'
                         self.ims[i], self.im_hw0[i], self.im_hw[i] = x  # im, hw_orig, hw_resized = load_image(self, i)
-                        b += self.ims[i].nbytes * WORLD_SIZE
+                        if self.fusion:
+                            b += sum(im.nbytes for im in self.ims[i]) * WORLD_SIZE
+                        else:
+                            b += self.ims[i].nbytes * WORLD_SIZE
                     pbar.desc = f"{prefix}Caching images ({b / gb:.1f}GB {cache_images})"
                 pbar.close()
 
@@ -722,9 +725,15 @@ class LoadImagesAndLabels(Dataset):
         b, gb = 0, 1 << 30  # bytes of cached images, bytes per gigabytes
         n = min(self.n, 30)  # extrapolate from 30 random images
         for _ in range(n):
-            im = cv2.imread(random.choice(self.im_files))  # sample image
-            ratio = self.img_size / max(im.shape[0], im.shape[1])  # max(h, w)  # ratio
-            b += im.nbytes * ratio**2
+            if self.fusion:
+                for im in Path(random.choice(self.im_files)).iterdir():
+                    im = cv2.imread(im)
+                    ratio = self.img_size / max(im.shape[0], im.shape[1])
+                    b += im.nbytes * ratio**2
+            else:
+                im = cv2.imread(random.choice(self.im_files))  # sample image
+                ratio = self.img_size / max(im.shape[0], im.shape[1])  # max(h, w)  # ratio
+                b += im.nbytes * ratio**2
         mem_required = b * self.n / n  # GB required to cache dataset into RAM
         mem = psutil.virtual_memory()
         cache = mem_required * (1 + safety_margin) < mem.available  # to cache or not to cache, that is the question
@@ -897,7 +906,10 @@ class LoadImagesAndLabels(Dataset):
             res = []
             for file in Path(f).iterdir() if Path(f).is_dir() else []:
                 _im, hw0, hw = self._load_image(im, file, fn, i)
-                res.append(_im)
+                if type(_im) is list or fn is not None:
+                    return _im, hw0, hw
+                else:
+                    res.append(_im)
             return res, hw0, hw
         else:
             return self._load_image(im, f, fn, i)
@@ -919,9 +931,16 @@ class LoadImagesAndLabels(Dataset):
 
     def cache_images_to_disk(self, i):
         """Saves an image to disk as an *.npy file for quicker loading, identified by index `i`."""
+        # TODO: np.save(f.as_posix(), cv2.join([cv2.imread(f) for f in self.im_files[i]])) <-- something like this
         f = self.npy_files[i]
         if not f.exists():
-            np.save(f.as_posix(), cv2.imread(self.im_files[i]))
+            if self.fusion:
+                im = []
+                for file in Path(self.im_files[i]).iterdir():
+                    im.append(cv2.imread(file))
+                np.save(f.as_posix(), im)
+            else:
+                np.save(f.as_posix(), cv2.imread(self.im_files[i]))
 
     def load_mosaic(self, index):
         """Loads a 4-image mosaic for YOLOv5, combining 1 selected and 3 random images, with labels and segments."""
