@@ -906,10 +906,9 @@ class LoadImagesAndLabels(Dataset):
             res = []
             for file in Path(f).iterdir() if Path(f).is_dir() else []:
                 _im, hw0, hw = self._load_image(im, file, fn, i)
-                if type(_im) is list or fn is not None:
+                if type(_im) is list:
                     return _im, hw0, hw
-                else:
-                    res.append(_im)
+                res.append(_im)
             return res, hw0, hw
         else:
             return self._load_image(im, f, fn, i)
