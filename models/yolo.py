@@ -504,11 +504,17 @@ def parse_model(d, ch=None, string=None, fuse_steps=[]):
             C3x,
             # Fusion
             CatFuse,
-            MLF
+            MLF,
+            CFT,
+            MCBAM,
         }:
             c1, c2 = ch[f], args[0]
             if c2 != no:  # if not output
                 c2 = make_divisible(c2 * gw, ch_mul)
+            if m in {CFT, MCBAM}:
+                ni = d["ni"]
+                c1 = c1 * ni # account for multiple inputs
+                c2 = c1 # CBMAM output channels are the same as input channels
 
             args = [c1, c2, *args[1:]]
             if m in {BottleneckCSP, C3, C3TR, C3Ghost, C3x}:

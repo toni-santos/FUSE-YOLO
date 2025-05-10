@@ -18,6 +18,7 @@ import torch
 import torch.nn as nn
 from PIL import Image
 from torch.cuda import amp
+import torch.nn.functional as F
 
 from models.common import *
 
@@ -55,7 +56,6 @@ from utils.general import (
 )
 from utils.torch_utils import copy_attr, smart_inference_mode
 
-# TODO: test and propperly implement
 # NOTE: after testing and implementing, turns out it doesn't work, check the DISS repository changelog for more info
 class MLF(nn.Module):
     """
@@ -126,3 +126,81 @@ class CatFuse(nn.Module):
 
     def forward(self, x):
         return self.conv(self.cat(x))
+
+class CFT(nn.Module):
+    """
+    Cross-Modality Fusion Transformer (CFT) module that fuses N features using a transformer architecture.
+    Based on the work in https://arxiv.org/pdf/2111.00273.
+    """
+
+    # NOTE: The original CFT needs a decoder, but for this implementation it's not needed.
+    def __init__(self, c1, c2, n_heads=8, n_layers=8):
+        super(CFT, self).__init__()
+
+        # Transformer layers
+        self.transformer_block = TransformerBlock(c1, c2, n_heads, n_layers)
+
+    def forward(self, x):
+        """
+        Args:
+            x (list): List of feature maps to be fused. Each feature map should have shape (batch_size, channels, height, width).
+        """
+
+        bs, c, h, w = x[0].shape
+        
+        # x = torch.cat([f.view(bs, c, -1) for f in x])  # flatten and concat the features
+        # x = x.permute(0, 2, 1).contiguous()
+        # x = self.dropout(self.position_embedding + x)
+        x = torch.cat(x, dim=1)
+        x = self.transformer_block(x)  # apply transformer block
+
+        return x
+
+
+# Attention Modules
+class ChannelAttention(nn.Module):
+    def __init__(self, in_channels, reduction=9):
+        super().__init__()
+        print("ChannelAttention", in_channels, reduction, in_channels // reduction)
+        self.fc1 = nn.Conv2d(in_channels, in_channels // reduction, kernel_size=1)
+        self.fc2 = nn.Conv2d(in_channels // reduction, in_channels, kernel_size=1)
+
+    def forward(self, x):
+        avg_pool = F.adaptive_avg_pool2d(x, 1)
+        max_pool = F.adaptive_max_pool2d(x, 1)
+
+        avg_out = self.fc2(F.relu(self.fc1(avg_pool)))
+        max_out = self.fc2(F.relu(self.fc1(max_pool)))
+
+        return torch.sigmoid(avg_out + max_out)
+
+class SpatialAttention(nn.Module):
+    def __init__(self):
+        super().__init__()
+        self.conv = nn.Conv2d(2, 1, kernel_size=7, padding=3)
+
+    def forward(self, x):
+        avg_pool = torch.mean(x, dim=1, keepdim=True)
+        max_pool, _ = torch.max(x, dim=1, keepdim=True)
+        x = torch.cat([avg_pool, max_pool], dim=1)
+        return torch.sigmoid(self.conv(x))
+
+class CBAM(nn.Module):
+    def __init__(self, in_channels, reduction=9):
+        super().__init__()
+        self.channel_attention = ChannelAttention(in_channels, 9)
+        self.spatial_attention = SpatialAttention()
+
+    def forward(self, x):
+        x = x * self.channel_attention(x)
+        x = x * self.spatial_attention(x)
+        return x
+
+class MCBAM(nn.Module):
+    def __init__(self, in_channels, reduction=9):
+        super().__init__()
+        self.cbam = CBAM(in_channels, reduction)
+
+    def forward(self, x):
+        x = torch.cat(x, dim=1)  # Concatenate the feature maps along the channel dimension
+        return self.cbam(x)
