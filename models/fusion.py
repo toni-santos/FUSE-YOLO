@@ -188,7 +188,7 @@ class SpatialAttention(nn.Module):
 class CBAM(nn.Module):
     def __init__(self, in_channels, reduction=9):
         super().__init__()
-        self.channel_attention = ChannelAttention(in_channels, 9)
+        self.channel_attention = ChannelAttention(in_channels, 3)
         self.spatial_attention = SpatialAttention()
 
     def forward(self, x):
@@ -197,6 +197,11 @@ class CBAM(nn.Module):
         return x
 
 class MCBAM(nn.Module):
+    """
+    Multi-input CBAM module that applies the CBAM attention mechanism to a list of feature maps.
+    Concatenates the feature maps along the channel dimension and applies the CBAM module.
+    """
+
     def __init__(self, in_channels, reduction=9):
         super().__init__()
         self.cbam = CBAM(in_channels, reduction)
@@ -204,3 +209,22 @@ class MCBAM(nn.Module):
     def forward(self, x):
         x = torch.cat(x, dim=1)  # Concatenate the feature maps along the channel dimension
         return self.cbam(x)
+
+class CBAMC(nn.Module):
+    """
+    Multi-input CBAM module that applies the CBAM attention mechanism to a list of feature maps.
+    Applies the CBAM module to each feature map individually and then concatenates the results.
+    """
+
+    def __init__(self, in_channels, out_channels, ni, reduction=3):
+        super().__init__()
+        self.cbam = CBAM(in_channels, reduction)
+        self.conv = nn.Conv2d(in_channels * ni, out_channels, kernel_size=1)
+
+    def forward(self, x):
+        r = []
+        for i in range(len(x)):
+            r.append(self.cbam(x[i]))
+        x = torch.cat(x, dim=1)
+        x = self.conv(x)
+        return x
