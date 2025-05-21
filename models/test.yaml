@@ -4,6 +4,7 @@ ni: 3 # input images (aka number of backbones)
 ch: 3 # input channels
 depth_multiple: 1.0  # model depth multiple
 width_multiple: 1.0  # layer channel multiple
+fusion_type: late # early or late
 
 anchors:
   - [10, 13, 16, 30, 33, 23] # P3/8
@@ -13,9 +14,9 @@ anchors:
 fuse_steps: [4, 6, 9]
 
 fuse: [
-  [0, 1, CatFuse, [256]],  # 0
-  [1, 1, CatFuse, [512]],  # 0
-  [2, 1, CatFuse, [1024]],  # 0
+  [0, 1, Trans, [256, 64]],  # 0
+  [1, 1, Trans, [512, 32]],  # 0
+  [2, 1, Trans, [1024, 16]],  # 0
 ]
 
 # YOLOv5 backbone

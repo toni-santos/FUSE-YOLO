@@ -156,7 +156,6 @@ class CFT(nn.Module):
 
         return x
 
-
 # Attention Modules
 class ChannelAttention(nn.Module):
     def __init__(self, in_channels, reduction=9):
@@ -227,4 +226,219 @@ class CBAMC(nn.Module):
             r.append(self.cbam(x[i]))
         x = torch.cat(x, dim=1)
         x = self.conv(x)
+        return x
+
+class MCBAMC(nn.Module):
+    """
+    - Deprecated
+    Multi-input CBAM module that applies the CBAM attention mechanism to a list of feature maps.
+    Applies the CBAM module to each feature map individually and then concatenates the results.
+    """
+
+    def __init__(self, in_channels, out_channels, ni, reduction=3):
+        super().__init__()
+        self.cat = Concat(dimension=1)
+        self.conv = nn.Conv2d(in_channels * ni, out_channels, kernel_size=1)
+        self.cbam = CBAM(in_channels, reduction)
+
+    def forward(self, x):
+        return self.cbam(self.conv(self.cat(x, dim=1)))
+
+
+class Trans(nn.Module):
+    def __init__(self, in_channels, out_channels, img_size = 512, num_heads=3, num_blocks=8):
+        super().__init__()
+        self.in_channels = in_channels * 3
+        self.out_channels = out_channels
+        self.num_blocks = num_blocks
+        
+        # Ensure num_heads divides embed_dim
+        if self.in_channels % num_heads != 0:
+            num_heads = 3  # Fallback to 3 if not divisible
+        
+        self.embed = PatchEmbed(in_chans=self.in_channels, embed_dim=self.in_channels, img_size=(img_size, img_size), patch_size=(16, 16), multi_conv=True)
+        self.linears = nn.ModuleList([
+            nn.Linear(self.in_channels, self.in_channels) for _ in range(3)
+        ])
+        self.mha = nn.MultiheadAttention(embed_dim=self.in_channels, num_heads=num_heads, batch_first=True)
+        self.norm1 = nn.LayerNorm(self.in_channels)
+        self.norm2 = nn.LayerNorm(self.in_channels)
+
+        # Make sure FFN outputs in_channels, not out_channels for residual connection
+        self.ffn = nn.Sequential(
+            nn.Linear(self.in_channels, self.in_channels * 2),  # Reduce expansion factor
+            nn.ReLU(),
+            nn.Linear(self.in_channels * 2, self.in_channels)  # Output same as input dims
+        )
+        
+        # Final projection to target output channels
+        self.proj = nn.Linear(self.in_channels, self.out_channels)
+        
+        self.dropout1 = nn.Dropout(0.1)
+        self.dropout2 = nn.Dropout(0.1)
+
+
+    def forward(self, x):
+        """
+        x -> [AIA_211, AIA_335, HMI_Ic]
+        """
+        b, c, h, w = x[0].shape
+
+        AIA_211 = x[0]
+        AIA_335 = x[1]
+        HMI_Ic = x[2]
+
+        # Concatenate along the channel dimension
+        x = torch.cat([AIA_211, AIA_335, HMI_Ic], dim=1)        
+        x = self.embed(x)
+        
+        x = self.norm1(x)
+
+        for _ in range(self.num_blocks):
+            [q, k, v] = [linear(x) for linear in self.linears]
+
+            attn_out = self.mha(q, k, v)[0]
+            attn_out = self.dropout1(attn_out)
+            x_res1 = x + attn_out
+            x_norm2 = self.norm2(x_res1)
+
+            ffn_out = self.ffn(x_norm2)
+            ffn_out = self.dropout2(ffn_out)
+            x = x_res1 + ffn_out
+
+        x_proj = self.proj(x)
+        patch_size = 16  # Based on your PatchEmbed config
+        out_h = h // patch_size
+        out_w = w // patch_size
+        
+        # Reshape properly: [b, seq_len, out_c] -> [b, out_c, out_h, out_w]
+        x_out = x_proj.transpose(1, 2).reshape(b, self.out_channels, out_h, out_w)
+
+        # Upsample
+        x_out = F.interpolate(x_out, size=(h, w), mode='bilinear', align_corners=False)
+        
+        return x_out
+
+# NOTE: WIP
+class Trans2(nn.Module):
+    def __init__(self, in_channels, out_channels, num_heads=8, img_size=512):
+        super().__init__()
+
+        self.in_channels = in_channels
+        self.out_channels = out_channels
+        
+        # Ensure num_heads divides embed_dim
+        if self.in_channels % num_heads != 0:
+            num_heads = 3  # Fallback to 3 if not divisible
+        
+        self.embeds = nn.ModuleList([
+            PatchEmbed(in_chans=self.in_channels, embed_dim=self.in_channels, img_size=(img_size, img_size), patch_size=(16, 16), multi_conv=True) for _ in range(3)
+        ])
+        self.pos_embeds = [
+            nn.Parameter(torch.zeros(1, 2 * img_size * img_size, self.in_channels)) for _ in range(3)
+        ]
+        self.mhas = nn.ModuleList([
+            nn.MultiheadAttention(embed_dim=self.in_channels, num_heads=num_heads, batch_first=True) for _ in range(2)
+        ])
+        self.norms = [
+            nn.LayerNorm(self.in_channels),
+            nn.LayerNorm(self.in_channels),
+            [nn.LayerNorm(self.in_channels) for _ in range(2)]
+        ]
+
+        # Make sure FFN outputs in_channels, not out_channels for residual connection
+        self.ffn = nn.Sequential(
+            nn.Linear(self.in_channels, self.in_channels * 2),  # Reduce expansion factor
+            nn.ReLU(),
+            nn.Linear(self.in_channels * 2, self.in_channels)  # Output same as input dims
+        )
+        
+        # Final projection to target output channels
+        self.proj = nn.Linear(self.in_channels, self.out_channels)
+        
+        self.dropout = nn.Dropout(0.1)
+
+
+    def forward(self, x):
+        """
+        x -> [AIA_211, AIA_335, HMI_Ic]
+        """
+        b, c, h, w = x[0].shape
+
+        # embeddings
+        tmp = []
+        for i in range(3):
+            t = self.embeds[i](x[i])
+            tmp.append(t + self.pos_embeds[i])
+        
+        # normalization
+        nor = []
+        for i in range(3):
+            norm = self.norms[i]
+            nor.append([norm(tmp[i]) for norm in norm])
+
+        AIA_211 = nor[0]
+        AIA_335 = nor[1]
+        HMI = nor[2]
+
+        attn_HMI_AIA211 = self.mhas[0](AIA_211, HMI, HMI)[0]
+        attn_HMI_AIA335 = self.mhas[0](AIA_335, HMI, HMI)[0]
+
+        attn_out = attn_HMI_AIA211 @ attn_HMI_AIA335
+        attn_out = self.dropout(attn_out)
+        ffn_out = self.ffn(attn_out)
+
+        print("ffn_out", ffn_out.shape)
+
+        patch_size = 16  # Based on your PatchEmbed config
+        out_h = h // patch_size
+        out_w = w // patch_size
+        
+        # Reshape properly: [b, seq_len, out_c] -> [b, out_c, out_h, out_w]
+        # x_out = x_proj.transpose(1, 2).reshape(b, self.out_channels, out_h, out_w)
+
+        # Upsample
+        # x_out = F.interpolate(x_out, size=(h, w), mode='bilinear', align_corners=False)
+        
+        return ffn_out
+
+
+class PatchEmbed(nn.Module):
+    """ Image to Patch Embedding
+    from: https://github.com/IBM/CrossViT/blob/main/models/crossvit.py#L36
+    """
+    def __init__(self, img_size=224, patch_size=16, in_chans=3, embed_dim=768, multi_conv=False):
+        super().__init__()
+        img_size = (img_size, img_size) if isinstance(img_size, int) else img_size
+        patch_size = (patch_size, patch_size) if isinstance(patch_size, int) else patch_size
+        num_patches = (img_size[1] // patch_size[1]) * (img_size[0] // patch_size[0])
+        self.img_size = img_size
+        self.patch_size = patch_size
+        self.num_patches = num_patches
+        if multi_conv:
+            if patch_size[0] == 12:
+                self.proj = nn.Sequential(
+                    nn.Conv2d(in_chans, embed_dim // 4, kernel_size=7, stride=4, padding=3),
+                    nn.ReLU(inplace=True),
+                    nn.Conv2d(embed_dim // 4, embed_dim // 2, kernel_size=3, stride=3, padding=0),
+                    nn.ReLU(inplace=True),
+                    nn.Conv2d(embed_dim // 2, embed_dim, kernel_size=3, stride=1, padding=1),
+                )
+            elif patch_size[0] == 16:
+                self.proj = nn.Sequential(
+                    nn.Conv2d(in_chans, embed_dim // 4, kernel_size=7, stride=4, padding=3),
+                    nn.ReLU(inplace=True),
+                    nn.Conv2d(embed_dim // 4, embed_dim // 2, kernel_size=3, stride=2, padding=1),
+                    nn.ReLU(inplace=True),
+                    nn.Conv2d(embed_dim // 2, embed_dim, kernel_size=3, stride=2, padding=1),
+                )
+        else:
+            self.proj = nn.Conv2d(in_chans, embed_dim, kernel_size=patch_size, stride=patch_size)
+
+    def forward(self, x):
+        B, C, H, W = x.shape
+        # FIXME look at relaxing size constraints
+        assert H == self.img_size[0] and W == self.img_size[1], \
+            f"Input image size ({H}*{W}) doesn't match model ({self.img_size[0]}*{self.img_size[1]})."
+        x = self.proj(x).flatten(2).transpose(1, 2)
         return x

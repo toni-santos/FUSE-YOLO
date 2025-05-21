@@ -295,7 +295,7 @@ class DetectionModel(BaseModel):
                 """Passes the input 'x' through the model and returns the processed output."""
                 return self.forward(x)[0] if isinstance(m, Segment) else self.forward(x)
 
-            s = 256  # 2x min stride
+            s = 512  # 2x min stride
             m.inplace = self.inplace
             if self.fusion:
                 m.stride = torch.tensor([s / x.shape[-2] for x in _forward(torch.zeros(1, ch*self.ni, s, s))]) # forward
@@ -508,6 +508,8 @@ def parse_model(d, ch=None, string=None, fuse_steps=[]):
             CFT,
             MCBAM,
             CBAMC,
+            Trans,
+            Trans2
         }:
             c1, c2 = ch[f], args[0]
             if c2 != no:  # if not output
