@@ -257,12 +257,14 @@ class Trans(nn.Module):
             num_heads = 3  # Fallback to 3 if not divisible
         
         self.embed = PatchEmbed(in_chans=self.in_channels, embed_dim=self.in_channels, img_size=(img_size, img_size), patch_size=(16, 16), multi_conv=True)
+        self.pos_embed = nn.Parameter(torch.zeros(1, 2 * img_size, self.in_channels))
         self.linears = nn.ModuleList([
             nn.Linear(self.in_channels, self.in_channels) for _ in range(3)
         ])
         self.mha = nn.MultiheadAttention(embed_dim=self.in_channels, num_heads=num_heads, batch_first=True)
         self.norm1 = nn.LayerNorm(self.in_channels)
         self.norm2 = nn.LayerNorm(self.in_channels)
+        self.dropout0 = nn.Dropout(0.1)
 
         # Make sure FFN outputs in_channels, not out_channels for residual connection
         self.ffn = nn.Sequential(
@@ -290,7 +292,7 @@ class Trans(nn.Module):
 
         # Concatenate along the channel dimension
         x = torch.cat([AIA_211, AIA_335, HMI_Ic], dim=1)        
-        x = self.embed(x)
+        x = self.dropout0(self.embed(x) + self.pos_embed)
         
         x = self.norm1(x)
 
