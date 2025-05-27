@@ -257,7 +257,7 @@ class Trans(nn.Module):
             num_heads = 3  # Fallback to 3 if not divisible
         
         self.embed = PatchEmbed(in_chans=self.in_channels, embed_dim=self.in_channels, img_size=(img_size, img_size), patch_size=(16, 16), multi_conv=True)
-        self.pos_embed = nn.Parameter(torch.zeros(1, 2 * img_size, self.in_channels))
+        self.pos_embed = nn.Parameter(torch.zeros(1, (img_size//16) * (img_size//16), self.in_channels))
         self.linears = nn.ModuleList([
             nn.Linear(self.in_channels, self.in_channels) for _ in range(3)
         ])
@@ -291,8 +291,9 @@ class Trans(nn.Module):
         HMI_Ic = x[2]
 
         # Concatenate along the channel dimension
-        x = torch.cat([AIA_211, AIA_335, HMI_Ic], dim=1)        
-        x = self.dropout0(self.embed(x) + self.pos_embed)
+        x = torch.cat([AIA_211, AIA_335, HMI_Ic], dim=1)
+        x = self.embed(x)
+        x = self.dropout0(x + self.pos_embed)
         
         x = self.norm1(x)
 
@@ -406,7 +407,8 @@ class Trans2(nn.Module):
 
 
 class PatchEmbed(nn.Module):
-    """ Image to Patch Embedding
+    """ 
+    Image to Patch Embedding
     from: https://github.com/IBM/CrossViT/blob/main/models/crossvit.py#L36
     """
     def __init__(self, img_size=224, patch_size=16, in_chans=3, embed_dim=768, multi_conv=False):
