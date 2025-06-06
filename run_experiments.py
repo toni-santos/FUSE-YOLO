@@ -24,7 +24,7 @@ experiments = [
     }
 ]
 
-csv_header = "Config,Fusion Type,Total Epochs,Best Epoch,Time Taken (hours)\n"
+csv_header = "Config,Fusion Type,Total Epochs,Best Epoch,Time Taken (hours),Experiment Path\n"
 
 for (idx, experiment) in enumerate(experiments):
     config = experiment["config"]
@@ -35,9 +35,10 @@ for (idx, experiment) in enumerate(experiments):
     
     # Start the process and capture output while displaying it in real-time
     process = subprocess.Popen(
-        ["python3", "./train.py", "--weights", "''", "--cfg", config, "--data", "DeepSDO.yaml", 
-         "--epochs", "1000", "--imgsz", "512", "--fusion", "--fusion-type", fusion_type, 
-         "--tl-fusion", "--batch-size", batch_size, "--save-period", "100", "--cache", "ram"],
+        # ["python3", "./train.py", "--weights", "''", "--cfg", config, "--data", "DeepSDO.yaml", 
+        #  "--epochs", "1000", "--imgsz", "512", "--fusion", "--fusion-type", fusion_type, 
+        #  "--tl-fusion", "--batch-size", batch_size, "--save-period", "100", "--cache", "ram"],
+        ["python3", "dud.py"],
         stdout=subprocess.PIPE,
         stderr=subprocess.STDOUT,
         text=True,
@@ -48,7 +49,7 @@ for (idx, experiment) in enumerate(experiments):
     res = ""
     # Read and display output in real-time
     for line in iter(process.stdout.readline, ''):
-        print(line, end='')  # Print in real-time
+        # print(line, end='')  # Print in real-time
         res += line          # Store for later parsing
     
     # Wait for the process to complete
@@ -57,6 +58,7 @@ for (idx, experiment) in enumerate(experiments):
     total_epochs = None
     best_epoch = None
     time_taken = None
+    exp = None
 
     for line in res.split('\n'):
         if line.startswith("Stopping training early as no improvement observed in last"):
@@ -68,12 +70,17 @@ for (idx, experiment) in enumerate(experiments):
             if match:
                 total_epochs = int(match.group(1))
                 time_taken = float(match.group(2))
+        elif line.startswith('Results saved to'):
+            match = re.search(r'Results saved to (runs/train/exp\d+)', line)
+            if match:
+                exp = match.group(1)
+                pass
 
     # write results to a file
     with open("experiment_results.csv", "a") as f:
         if idx == 0:
             f.write(csv_header)
         if total_epochs is not None and best_epoch is not None and time_taken is not None:
-            f.write(f"{config},{fusion_type},{total_epochs},{best_epoch},{time_taken}\n")
+            f.write(f"{config},{fusion_type},{total_epochs},{best_epoch},{time_taken},{exp}\n")
         else:
             print(f"Failed to parse results for config: {config}, fusion type: {fusion_type}")
