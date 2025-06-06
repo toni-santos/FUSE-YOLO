@@ -215,7 +215,7 @@ class CBAMC(nn.Module):
     Applies the CBAM module to each feature map individually and then concatenates the results.
     """
 
-    def __init__(self, in_channels, out_channels, ni, reduction=3):
+    def __init__(self, in_channels, out_channels, ni=3, reduction=3):
         super().__init__()
         self.cbam = CBAM(in_channels, reduction)
         self.conv = nn.Conv2d(in_channels * ni, out_channels, kernel_size=1)

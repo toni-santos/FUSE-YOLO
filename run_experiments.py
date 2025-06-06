@@ -37,7 +37,7 @@ for (idx, experiment) in enumerate(experiments):
     process = subprocess.Popen(
         ["python3", "./train.py", "--weights", "''", "--cfg", config, "--data", "DeepSDO.yaml", 
          "--epochs", "1000", "--imgsz", "512", "--fusion", "--fusion-type", fusion_type, 
-         "--tl-fusion", "--batch-size", batch_size, "--save-period", "100"],
+         "--tl-fusion", "--batch-size", batch_size, "--save-period", "100", "--cache", "ram"],
         stdout=subprocess.PIPE,
         stderr=subprocess.STDOUT,
         text=True,

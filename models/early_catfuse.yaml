@@ -12,7 +12,7 @@ anchors:
   - [116, 90, 156, 198, 373, 326] # P5/32
 
 fuse: [
-  [-1, 1, CatFuse, []], # out_channels, number of inputs
+  [-1, 1, CatFuse, [3]], # out_channels, number of inputs
 ]
 
 # YOLOv5 backbone

@@ -14,9 +14,9 @@ anchors:
 fuse_steps: [4, 6, 9]
 
 fuse: [
-  [0, 1, CBAMC, []],  # 0
-  [1, 1, CBAMC, []],  # 0
-  [2, 1, CBAMC, []],  # 0
+  [0, 1, CBAMC, [256]],  # 0
+  [1, 1, CBAMC, [512]],  # 0
+  [2, 1, CBAMC, [1024]],  # 0
 ]
 
 # YOLOv5 backbone
