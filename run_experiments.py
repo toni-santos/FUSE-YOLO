@@ -26,15 +26,34 @@ experiments = [
 
 csv_header = "Config,Fusion Type,Total Epochs,Best Epoch,Time Taken (hours)\n"
 
-for experiment, idx in enumerate(experiments):
+for (idx, experiment) in enumerate(experiments):
     config = experiment["config"]
     fusion_type = experiment["fusion_type"]
-    batch_size = 4 if fusion_type == "late" else 16    # Adjust batch size as needed
+    batch_size = "4" if fusion_type == "late" else "16"
 
     print(f"Running experiment with config: {config}, fusion type: {fusion_type}")
     
-    res = subprocess.run(["python3", "train.py", "--weights", "''", "--cfg", config, "--data", "DeepSDO.yaml", "--epochs", "1000", "--imgsz", "512", "--fusion", "--fusion-type", fusion_type, "--tl-fusion", "--batch-size", batch_size, "--save-period", "100"], stdout=subprocess.PIPE).stdout.decode('utf-8')
+    # Start the process and capture output while displaying it in real-time
+    process = subprocess.Popen(
+        ["python3", "./train.py", "--weights", "''", "--cfg", config, "--data", "DeepSDO.yaml", 
+         "--epochs", "1000", "--imgsz", "512", "--fusion", "--fusion-type", fusion_type, 
+         "--tl-fusion", "--batch-size", batch_size, "--save-period", "100"],
+        stdout=subprocess.PIPE,
+        stderr=subprocess.STDOUT,
+        text=True,
+        bufsize=1
+    )
     
+    # Capture all output for later parsing
+    res = ""
+    # Read and display output in real-time
+    for line in iter(process.stdout.readline, ''):
+        print(line, end='')  # Print in real-time
+        res += line          # Store for later parsing
+    
+    # Wait for the process to complete
+    process.wait()
+
     total_epochs = None
     best_epoch = None
     time_taken = None
