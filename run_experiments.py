@@ -33,26 +33,21 @@ for (idx, experiment) in enumerate(experiments):
 
     print(f"Running experiment with config: {config}, fusion type: {fusion_type}")
     
-    # Start the process and capture output while displaying it in real-time
     process = subprocess.Popen(
-        # ["python3", "./train.py", "--weights", "''", "--cfg", config, "--data", "DeepSDO.yaml", 
-        #  "--epochs", "1000", "--imgsz", "512", "--fusion", "--fusion-type", fusion_type, 
-        #  "--tl-fusion", "--batch-size", batch_size, "--save-period", "100", "--cache", "ram"],
-        ["python3", "dud.py"],
+        ["python3", "./train.py", "--weights", "''", "--cfg", config, "--data", "DeepSDO.yaml", 
+         "--epochs", "1000", "--imgsz", "512", "--fusion", "--fusion-type", fusion_type, 
+         "--tl-fusion", "--batch-size", batch_size, "--save-period", "100", "--cache", "ram"],
         stdout=subprocess.PIPE,
         stderr=subprocess.STDOUT,
         text=True,
         bufsize=1
     )
     
-    # Capture all output for later parsing
     res = ""
-    # Read and display output in real-time
     for line in iter(process.stdout.readline, ''):
-        # print(line, end='')  # Print in real-time
-        res += line          # Store for later parsing
+        print(line, end='')
+        res += line
     
-    # Wait for the process to complete
     process.wait()
 
     total_epochs = None
