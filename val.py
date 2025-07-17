@@ -25,6 +25,7 @@ import os
 import subprocess
 import sys
 from pathlib import Path
+import csv
 
 import numpy as np
 import torch
@@ -35,6 +36,9 @@ ROOT = FILE.parents[0]  # YOLOv5 root directory
 if str(ROOT) not in sys.path:
     sys.path.append(str(ROOT))  # add ROOT to PATH
 ROOT = Path(os.path.relpath(ROOT, Path.cwd()))  # relative
+
+per_image_metrics = []
+csv_path = 'per_image_metrics.csv'
 
 from models.common import DetectMultiBackend
 from utils.callbacks import Callbacks
@@ -385,6 +389,35 @@ def run(
                     confusion_matrix.process_batch(predn, labelsn)
             stats.append((correct, pred[:, 4], pred[:, 5], labels[:, 0]))  # (correct, conf, pcls, tcls)
 
+            # Filter predictions by confidence threshold (0.25)
+            conf_thresh = 0.25
+            pred_mask = pred[:, 4] > conf_thresh
+            pred_filtered = pred[pred_mask]
+            correct_filtered = correct[pred_mask] if correct.numel() else torch.zeros((0, correct.shape[1]), device=correct.device)
+
+            iou_idx = 0  # IoU=0.5
+            correct_img = correct_filtered[:, iou_idx].cpu().numpy() if correct_filtered.numel() else np.array([])
+            n_gt = labels.shape[0]
+            n_pred = pred_filtered.shape[0]
+
+            tp_ = int(correct_img.sum())
+            fp_ = int(n_pred - tp_)
+            fn_ = int(n_gt - tp_)
+
+            precision = tp_ / (tp_ + fp_ + 1e-16) if (tp_ + fp_) > 0 else 0.0
+            recall = tp_ / (tp_ + fn_ + 1e-16) if (tp_ + fn_) > 0 else 0.0
+            f1 = 2 * precision * recall / (precision + recall + 1e-16) if (precision + recall) > 0 else 0.0
+
+            per_image_metrics.append({
+                'image_path': str(path),
+                'precision': precision,
+                'recall': recall,
+                'f1': f1,
+                'true_positives': tp_,
+                'false_positives': fp_,
+                'false_negatives': fn_
+            })
+
             # Save/log
             if save_txt:
                 (save_dir / "labels").mkdir(parents=True, exist_ok=True)
@@ -464,6 +497,13 @@ def run(
             map, map50 = eval.stats[:2]  # update results (mAP@0.5:0.95, mAP@0.5)
         except Exception as e:
             LOGGER.info(f"pycocotools unable to run: {e}")
+
+    with open(csv_path, 'w', newline='') as csvfile:
+        fieldnames = ['image_path', 'precision', 'recall', 'f1', 'true_positives', 'false_positives', 'false_negatives']
+        writer = csv.DictWriter(csvfile, fieldnames=fieldnames)
+        writer.writeheader()
+        for row in per_image_metrics:
+            writer.writerow(row)
 
     # Return results
     model.float()  # for training

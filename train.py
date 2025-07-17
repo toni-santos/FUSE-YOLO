@@ -370,7 +370,7 @@ def train(hyp, opt, device, callbacks):
             hyp=hyp,
             augment=False,
             cache=cache,
-            rect=True,
+            rect=False,
             rank=-1,
             workers=workers * 2,
             pad=0.5,
@@ -481,11 +481,8 @@ def train(hyp, opt, device, callbacks):
             if ni - last_opt_step >= accumulate:
                 scaler.unscale_(optimizer)  # unscale gradients
                 torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=10.0)  # clip gradients
-                weight_norm_before = sum(p.norm().item() for p in model.parameters())
                 scaler.step(optimizer)  # optimizer.step
                 scaler.update()
-                weight_norm_after = sum(p.norm().item() for p in model.parameters())
-                LOGGER.info(f"Weight norm before: {weight_norm_before:.6f}, after: {weight_norm_after:.6f}")
                 optimizer.zero_grad()
                 if ema:
                     ema.update(model)
