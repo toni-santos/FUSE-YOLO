@@ -33,4 +33,4 @@ Calling the fusion module in your configuration file is done similarly to any ot
 
 ### Citing
 
-A paper based on the work of the dissertation that is behind this model has been submitted to the journal of Image and Vision Computing and is currently awaiting approval. Until then, if you are citing this work, please use this repository's URL.
+A paper based on the work of the dissertation that is behind this model has been published. The paper is available [here](https://link.springer.com/article/10.1007/s00138-026-01807-y).
